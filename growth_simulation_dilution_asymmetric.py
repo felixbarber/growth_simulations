@@ -77,6 +77,7 @@ list9 = [13, 14, 15, 16, 21, 22]  # models with a constant non-volumetric Whi5 f
 list10 = [19, 20]  # models with different roles for mothers and daughters
 list11 = [23, 24, 25, 26]  # models which have noise in r. Assumes no noise in growth rate or r.
 list12 = [25, 26]  # model in which noise in r is translated to noise in t
+list13 = [27]  # model in which cells can't shrink, and just act as adders between birth and division
 
 
 # par['CD'] = 0.75*par['td']
@@ -121,78 +122,100 @@ class Cell(object):
 
     def grow(self, par1):  # integration model for accumulation of initiator protein. In slow growth case.
         self.td = par1['td']  # mass doubling time constant. All models get this
-        if not par1['modeltype'] in list11:  # if these cells don't have noise entirely in the asymmetry ratio
-            self.CD = par1['CD']  # time delay C+D after the initiation is begun
-        if par1['modeltype'] in list3 + list2a + list2b:  # in this case we have a model with delta =K*CD
-            self.K = par1['K'] / par1['td']  # Whi5 synthesis rate per second
-            self.delta = par1['K']*par1['CD']
-        if par1['modeltype'] in list3a:
-            self.delta = par1['delta']  # in this case delta is defined separately as some integrated value delta.
-        # Calculate the volume of this cell at initiation and division.
-        if par1['modeltype'] in list12:
-            self.delta = par1['K']*(np.log(1+par1['r'])-0.5*par1['r_std']**2/(1+par1['r'])**2)/np.log(2)
-            self.K = par1['K']
 
-        # at this stage all cells should have defined Delta
-
-        if par1['g1_thresh_std'] != 0:  # gaussian noise in the abundance of initiator required to cause initiation
-            noise_thr = np.random.normal(0.0, par1['g1_thresh_std'], 1)[0]
+        if par1['modeltype'] in list13:
+            l = (1 + np.random.normal(0.0, par1['l_std'], 1)[0]) * np.log(2) / self.td  # noisy growth rate
+            d = (1 + np.random.normal(0.0, par1['d_std'], 1)[0]) * par1['delta']
+            self.vd = self.vb+d  # no noise in this
+            self.vi = max(self.vb, self.vd/(1+par1['r']))
+            # placeholders
+            self.wd = 0
         else:
-            noise_thr = 0.0
-        if par1['modeltype'] in list3a+list2b+list12:
-            noise_thr = noise_thr * self.delta  # scaling of noise in G1 by Delta.
-        if par1['g1_std'] != 0:
-            noise_g1 = par1['g1_delay'] + np.random.normal(0.0, par1['g1_std'], 1)[0]
-            # noise G1 contains time delay.
-            # generate and retain the time additive noise in the first part of the cell cycle.
-        else:
-            noise_g1 = par1['g1_delay']
-        # if not par1['modeltype'] in list11:  # only get noise in G2 if we don't take all noise in r.
+            if not par1['modeltype'] in list11:  # if these cells don't have noise entirely in the asymmetry ratio
+                self.CD = par1['CD']  # time delay C+D after the initiation is begun
+            if par1['modeltype'] in list3 + list2a + list2b:  # in this case we have a model with delta =K*CD
+                self.K = par1['K'] / par1['td']  # Whi5 synthesis rate per second
+                self.delta = par1['K']*par1['CD']
+            if par1['modeltype'] in list3a:
+                self.delta = par1['delta']  # in this case delta is defined separately as some integrated value delta.
+            # Calculate the volume of this cell at initiation and division.
+            if par1['modeltype'] in list12:
+                self.delta = par1['K']*(np.log(1+par1['r'])-0.5*par1['r_std']**2/(1+par1['r'])**2)/np.log(2)
+                self.K = par1['K']
 
-        if par1['modeltype'] in list1 and not par1['l_std'] == 0:
-            l = (1 + np.random.normal(0.0, par1['l_std'], 1)[0]) * np.log(2) / self.td
+            # at this stage all cells should have defined Delta
 
-            # prevents shrinking due to a negative growth rate
-            while l < 0:  # never allow a negative growth rate as this implies cells are shrinking
+            if par1['g1_thresh_std'] != 0:  # gaussian noise in the abundance of initiator required to cause initiation
+                noise_thr = np.random.normal(0.0, par1['g1_thresh_std'], 1)[0]
+            else:
+                noise_thr = 0.0
+            if par1['modeltype'] in list3a+list2b+list12:
+                noise_thr = noise_thr * self.delta  # scaling of noise in G1 by Delta.
+            if par1['g1_std'] != 0:
+                noise_g1 = par1['g1_delay'] + np.random.normal(0.0, par1['g1_std'], 1)[0]
+                # noise G1 contains time delay.
+                # generate and retain the time additive noise in the first part of the cell cycle.
+            else:
+                noise_g1 = par1['g1_delay']
+            # if not par1['modeltype'] in list11:  # only get noise in G2 if we don't take all noise in r.
+
+            if par1['modeltype'] in list1 and not par1['l_std'] == 0:
                 l = (1 + np.random.normal(0.0, par1['l_std'], 1)[0]) * np.log(2) / self.td
 
-            # allows for having noise in growth rate.
-        else:
-            l = np.log(2)/self.td
+                # prevents shrinking due to a negative growth rate
+                while l < 0:  # never allow a negative growth rate as this implies cells are shrinking
+                    l = (1 + np.random.normal(0.0, par1['l_std'], 1)[0]) * np.log(2) / self.td
 
-        # G1 part of cell cycle. At this stage cell should have wb, vi, noise_g1, l and noise_thr.
-
-        if par1['modeltype'] in list6:
-            self.vi = self.wb * np.exp(noise_g1 * self.td * l) / (1 + noise_thr)
-        elif par1['modeltype'] in list8:  # introduce a minimum in the volume at which cells go through Start
-            self.vi = max((self.wb + noise_thr) * np.exp(noise_g1 * self.td * l), self.vb)
-        elif par1['modeltype'] in list10:  # mother cells from list10 have a simple timer model
-            if self.isdaughter:
-                if par1['modeltype'] in list8:
-                    self.vi = max((self.wb + noise_thr) * np.exp(noise_g1 * self.td * l), self.vb)
-                else:
-                    self.vi = (self.wb + noise_thr) * np.exp(noise_g1 * self.td * l)
+                # allows for having noise in growth rate.
             else:
-                if par1['modeltype'] in list8:
-                    self.vi = self.vb * max(np.exp(noise_g1 * self.td * l), 1.0)
+                l = np.log(2)/self.td
+
+            # G1 part of cell cycle. At this stage cell should have wb, vi, noise_g1, l and noise_thr.
+
+            if par1['modeltype'] in list6:
+                self.vi = self.wb * np.exp(noise_g1 * self.td * l) / (1 + noise_thr)
+            elif par1['modeltype'] in list8:  # introduce a minimum in the volume at which cells go through Start
+                self.vi = max((self.wb + noise_thr) * np.exp(noise_g1 * self.td * l), self.vb)
+            elif par1['modeltype'] in list10:  # mother cells from list10 have a simple timer model
+                if self.isdaughter:
+                    if par1['modeltype'] in list8:
+                        self.vi = max((self.wb + noise_thr) * np.exp(noise_g1 * self.td * l), self.vb)
+                    else:
+                        self.vi = (self.wb + noise_thr) * np.exp(noise_g1 * self.td * l)
                 else:
-                    self.vi = self.vb * np.exp(noise_g1 * self.td * l)
-        else:
-            self.vi = (self.wb + noise_thr) * np.exp(noise_g1 * self.td * l)
+                    if par1['modeltype'] in list8:
+                        self.vi = self.vb * max(np.exp(noise_g1 * self.td * l), 1.0)
+                    else:
+                        self.vi = self.vb * np.exp(noise_g1 * self.td * l)
+            else:
+                self.vi = (self.wb + noise_thr) * np.exp(noise_g1 * self.td * l)
 
-        # Budded part of cell cycle. At this stage should have defined growth rate l, vi, wb.
-        # Volume added.
-        self.vd = self.vi-1  # ensures that the following code is run at least once.
+            # Budded part of cell cycle. At this stage should have defined growth rate l, vi, wb.
+            # Volume added.
+            self.vd = self.vi-1  # ensures that the following code is run at least once.
 
-        # prevents shrinking in cells in list8. If we do this for all models then you're trying to make a positive * neg
-        # = a positive and it takes forever.
-        if par1['modeltype'] in list8:
-            while self.vd <= self.vi:  # resample until we get a volume at division which is greater than that at birth.
+            # prevents shrinking in cells in list8. If we do this for all models then you're trying to make a positive * neg
+            # = a positive and it takes forever.
+            if par1['modeltype'] in list8:
+                while self.vd <= self.vi:  # resample until we get a volume at division which is greater than that at birth.
+                    if par1['modeltype'] in list11:
+                        if par1['r_std'] == 0:
+                            self.r = par1['r']
+                        else:
+                            self.r = par1['r']*(1+np.random.normal(0.0, par1['r_std'], 1)[0])
+                        self.vd = self.vi * (1 + self.r)
+                    else:
+                        if par1['g2_std'] != 0:  # calculate the size and abundance of whi5 at division.
+                            noise_g2 = np.random.normal(0.0, par1['g2_std'], 1)[0]
+                        else:
+                            noise_g2 = 0.0
+                        self.vd = self.vi * np.exp((self.CD + noise_g2) * self.td * l)
+            else:
                 if par1['modeltype'] in list11:
                     if par1['r_std'] == 0:
                         self.r = par1['r']
                     else:
-                        self.r = par1['r']*(1+np.random.normal(0.0, par1['r_std'], 1)[0])
+                        self.r = par1['r'] * (1 + np.random.normal(0.0, par1['r_std'], 1)[0])
                     self.vd = self.vi * (1 + self.r)
                 else:
                     if par1['g2_std'] != 0:  # calculate the size and abundance of whi5 at division.
@@ -200,55 +223,42 @@ class Cell(object):
                     else:
                         noise_g2 = 0.0
                     self.vd = self.vi * np.exp((self.CD + noise_g2) * self.td * l)
-        else:
-            if par1['modeltype'] in list11:
-                if par1['r_std'] == 0:
-                    self.r = par1['r']
-                else:
-                    self.r = par1['r'] * (1 + np.random.normal(0.0, par1['r_std'], 1)[0])
-                self.vd = self.vi * (1 + self.r)
-            else:
-                if par1['g2_std'] != 0:  # calculate the size and abundance of whi5 at division.
-                    noise_g2 = np.random.normal(0.0, par1['g2_std'], 1)[0]
-                else:
-                    noise_g2 = 0.0
-                self.vd = self.vi * np.exp((self.CD + noise_g2) * self.td * l)
-        self.t_bud = np.log(self.vd / self.vi) / l  # length of time spent in budded portion of cell cycle.
-        # inhibitor added. Model type determines self.delta, which is added to self.wb.
-        # Noisy synthesis rate model
-        if par1['modeltype'] in list2b+list12 and not par1['k_std'] == 0:  # models with noise in Whi5 synthesis rate.
-            self.K = par1['K'] * (1 + np.random.normal(0.0, par1['k_std'], 1)[0]) / par1['td']  # per unit time
-            # raise ValueError("I should not be here")
-            # prevents shrinking
-            # while self.K < 0.0:
-            #     self.K = par1['K'] * (1 + np.random.normal(0.0, par1['k_std'], 1)[0]) / par1['td']  # per unit time
-
-        if par1['modeltype'] in list2+list12:
-            self.delta = self.K * self.t_bud  # noise in production of Whi5
-        # Noisy integrator model. Noiseless integrator model needs no change from above.
-        elif par1['modeltype'] in list3a:
-            if par1['d_std'] == 0:
-                noise_d = 0.0
-            else:
-                noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
-
+            self.t_bud = np.log(self.vd / self.vi) / l  # length of time spent in budded portion of cell cycle.
+            # inhibitor added. Model type determines self.delta, which is added to self.wb.
+            # Noisy synthesis rate model
+            if par1['modeltype'] in list2b+list12 and not par1['k_std'] == 0:  # models with noise in Whi5 synthesis rate.
+                self.K = par1['K'] * (1 + np.random.normal(0.0, par1['k_std'], 1)[0]) / par1['td']  # per unit time
+                # raise ValueError("I should not be here")
                 # prevents shrinking
-                while noise_d < -1.0:
-                    noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
-            self.delta = self.delta * (1 + noise_d)
-            del noise_d
-        elif par1['modeltype'] in list2a:  # models with uncorrelated noise in Whi5 production
-            if par1['d_std'] == 0:
-                noise_d = 0.0
-            else:
-                noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
+                # while self.K < 0.0:
+                #     self.K = par1['K'] * (1 + np.random.normal(0.0, par1['k_std'], 1)[0]) / par1['td']  # per unit time
 
-                # prevents shrinking
-                while noise_d < self.delta:
+            if par1['modeltype'] in list2+list12:
+                self.delta = self.K * self.t_bud  # noise in production of Whi5
+            # Noisy integrator model. Noiseless integrator model needs no change from above.
+            elif par1['modeltype'] in list3a:
+                if par1['d_std'] == 0:
+                    noise_d = 0.0
+                else:
                     noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
-            self.delta = self.delta + noise_d
-        # Set whi5 at division.
-        self.wd = self.wb + self.delta
+
+                    # prevents shrinking
+                    while noise_d < -1.0:
+                        noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
+                self.delta = self.delta * (1 + noise_d)
+                del noise_d
+            elif par1['modeltype'] in list2a:  # models with uncorrelated noise in Whi5 production
+                if par1['d_std'] == 0:
+                    noise_d = 0.0
+                else:
+                    noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
+
+                    # prevents shrinking
+                    while noise_d < self.delta:
+                        noise_d = np.random.normal(0.0, par1['d_std'], 1)[0]
+                self.delta = self.delta + noise_d
+            # Set whi5 at division.
+            self.wd = self.wb + self.delta
 
         # time of growth and input the time for the cell to divide.
         self.t_grow = np.log(self.vd / self.vb) / l
@@ -335,7 +345,12 @@ def starting_popn(par1):
         vd = d * par1['r']
         vm = d
         del d
-
+    if par1['modeltype'] in list13:
+        vd = 2*par1['r']*par1['delta']/(1+par1['r'])
+        vm = 2*par1['delta']/(1+par1['r'])
+        # placeholders
+        wd = 0
+        wm = 0
 
         # here the boolean optional parameter 'dilution' specifies whether the model involved
     # should be based on a Whi5 dilution scheme.
@@ -542,6 +557,9 @@ def next_gen(index, f, t, par1):
     # This function resets growth-policy specific variables for a single birth event.
     # Should be used within discr_time to evolve the list of cells c.
     # frac = max((f[index].vd-f[index].vi)/f[index].vd, 0.0)
+    if par1['modeltype'] in list13:
+        # frac1 = par1['r']/(1+par1['r'])  # non-budding
+        frac1 = (f[index].vd - f[index].vi) / f[index].vd  # budding
     if par1['modeltype'] in list4:
         frac1 = 1-np.exp(-par1['CD']*np.log(2))
         # model 2 has noise distributed volumetrically between m and d.
@@ -2051,3 +2069,55 @@ def nice_plot(ax_handle, tkw):
     plt.xticks(size=18)
     plt.yticks(size=18)
     return ax_handle
+
+
+def plot_vals_array(data,temp,temp1):
+    #  Variation of plt_all_conditions to look at two variables: x and y.
+    # medium is rows, x is first column, y is second column. Temp gives titles.
+    fig = plt.figure(figsize=[15, 15])
+    l = 3  # number of standard deviations around mean value which will be plotted.
+    vals = np.zeros([len(data), 5])
+    num_bins = 20
+    font = {'family': 'normal', 'weight': 'bold', 'size': 22}
+    plt.rc('font', **font)
+    for k in range(len(data)):
+        ax = plt.subplot(1, len(data), k+1)
+        ax.set_axis_bgcolor('white')
+        x = data[k][:,0]
+        y = data[k][:,1]
+        plt.hexbin(x, y, cmap="Purples")
+        # plt.plot(x, y, '.')
+        plt.title(temp[k], size=16, weight="bold")
+        plt.xlabel(temp1[0], size=16, weight="bold")
+        plt.ylabel(temp1[1], size=16, weight="bold")
+        xmin, xmax, ymin, ymax = np.mean(x) - l * np.std(x), np.mean(x) + l * np.std(x), np.mean(y) - l * np.std(y), np.mean(y) + l * np.std(y)
+        plt.ylim(ymin=ymin, ymax=ymax)
+        plt.xlim(xmin=xmin, xmax=xmax)
+        bin_means, bin_edges, binnumber = scipy.stats.binned_statistic(x, np.arange(len(x)), statistic='mean',
+                                                                       bins=num_bins, range=None)
+        bin_posns = list([])
+        y_av = list([])
+        y_sem = list([])
+        bin_err = list([])
+        for j in range(num_bins):
+            bin_no = binnumber == j + 1
+            if np.sum(bin_no) > 20:  # we don't want to be skewed by having too few data points in a fit
+                y_av.append(np.mean(y[np.nonzero(bin_no)]))
+                y_sem.append(np.std(y[np.nonzero(bin_no)]) / np.sqrt(np.sum(bin_no)))
+                bin_posns.append((bin_edges[j] + bin_edges[j + 1]) / 2)
+                bin_err.append((bin_edges[j + 1] - bin_edges[j]) / 2)
+        y_av = np.asarray(y_av)
+        y_sem = np.asarray(y_sem)
+        bin_posns = np.asarray(bin_posns)
+        bin_err = np.asarray(bin_err)
+        plt.errorbar(bin_posns, y_av, yerr=y_sem, label="binned means", ls="none", color="r")
+        vals[k,:]=scipy.stats.linregress(x,y)
+        xvals = np.linspace(xmin, xmax, 100)
+        # plt.plot(xvals, xvals*vals[k,0]+vals[k,1], label='LR slope={0}'.format(np.round(vals[k,0],2)))
+        plt.plot(xvals, xvals*vals[k,0]+vals[k,1], label='$y={0}x+{1}$'.format(np.round(vals[k, 0], 3), np.round(vals[k,1],3)))
+        plt.legend(loc=2)
+
+        # fontsize of the axes title
+        del x, y, bin_means, bin_edges, binnumber, y_av, y_sem, k, j
+    plt.suptitle(temp1[0]+' vs. ' + temp1[1])
+    return fig
